@@ -1,0 +1,86 @@
+# ============================================================
+# TARS-Robot 仓库根 .gitignore
+# 目标：只提交源码 / 配置 / 文档，不提交任何可再生成的构建产物
+# 说明：mcu/prj/.gitignore 还保留了 CubeMX 自己的规则，两者叠加生效
+# ============================================================
+
+# ---------- CMake / Ninja / GCC ARM 构建产物 ----------
+build/
+build-*/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+.ninja_deps
+.ninja_log
+*.o
+*.obj
+*.d
+*.su
+*.elf
+*.axf
+*.bin
+*.hex
+*.map
+*.srec
+*.lst
+*.lnp
+*.dep
+*.crf
+*.iex
+
+# 如果以后要归档出厂/发布固件，取消下面这行的注释
+# !firmware/*.hex
+
+# ---------- 调试器 / 烧录器产生的临时文件 ----------
+JLinkLog.txt
+JLinkSettings.ini
+*.jflash
+*.stldr
+*.trace
+*.log
+
+# ---------- IDE / 编辑器 ----------
+# 保留 VS Code 的调试与构建配置，只忽略它自己的缓存
+.vscode/*
+!.vscode/launch.json
+!.vscode/tasks.json
+!.vscode/settings.json
+!.vscode/c_cpp_properties.json
+!.vscode/extensions.json
+.idea/
+*.uvguix.*
+*.uvoptx
+MDK-ARM/**/Objects/
+MDK-ARM/**/Listings/
+*.build_log.htm
+
+# ---------- 操作系统 ----------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------- 临时 / 备份 ----------
+*.bak
+*.tmp
+*.orig
+*.rej
+*.swp
+*~
+
+# ---------- Python（上位机、标定脚本、数据分析） ----------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# ---------- ROS 2（如果以后加工作空间） ----------
+install/
+log/
+
+# ---------- 其他 ----------
+mx.scratch
