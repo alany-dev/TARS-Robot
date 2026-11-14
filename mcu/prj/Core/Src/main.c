@@ -21,7 +21,9 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include <stdio.h>
+#include "gpio.h"
+#include "key.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -40,6 +42,7 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
 
@@ -48,13 +51,26 @@
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
+/* printf 重定向到 USART1（115200，PA9/PA10）。
+ * GCC/newlib 走 __io_putchar；syscalls.c 的 _write() 会逐字节调用它。
+ * 注意：不要放在中断里调用，HAL_UART_Transmit 是阻塞发送。 */
+#ifdef __GNUC__
+int __io_putchar(int ch)
+#else
+int fputc(int ch, FILE *f)
+#endif
+{
+  uint8_t c = (uint8_t)ch;
+  HAL_UART_Transmit(&huart1, &c, 1, 10);
+  return ch;
+}
 /* USER CODE END 0 */
 
 /**
@@ -86,7 +102,13 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
+  Key_Init();
+  printf("\r\n=== TARS-Robot MCU boot ===\r\n");
+  printf("SYSCLK = %lu Hz\r\n", (unsigned long)SystemCoreClock);
+  printf("printf redirect to USART1 @115200 OK\r\n");
+  printf("KEY1: click / long press\r\n");
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -94,9 +116,37 @@ int main(void)
   while (1)
   {
     /* USER CODE END WHILE */
-    HAL_GPIO_TogglePin(LED_SYS_GPIO_Port, LED_SYS_Pin);
-    HAL_Delay(500);
+
     /* USER CODE BEGIN 3 */
+    uint32_t now = HAL_GetTick();
+
+    /* 按键：10 ms 一次，消抖后的单击 / 长按在这里取事件 */
+    static uint32_t t_key = 0;
+    if (now - t_key >= 10U) {
+        t_key = now;
+        Key_Task();
+
+        switch (Key_GetEvent()) {
+        case KEY_EVENT_CLICK:
+            printf("KEY2 click\r\n");
+            break;
+        case KEY_EVENT_LONG_PRESS:
+            printf("KEY2 long press\r\n");
+            break;
+        default:
+            break;
+        }
+    }
+
+    /* LED + 日志：500 ms 一次；不用 HAL_Delay 阻塞，避免拖慢按键响应 */
+    static uint32_t t_led = 0;
+    if (now - t_led >= 500U) {
+        t_led = now;
+        HAL_GPIO_TogglePin(LED_SYS_GPIO_Port, LED_SYS_Pin);
+        printf("tick=%lu, led=%d\r\n",
+               (unsigned long)now,
+               (int)HAL_GPIO_ReadPin(LED_SYS_GPIO_Port, LED_SYS_Pin));
+    }
   }
   /* USER CODE END 3 */
 }
@@ -147,6 +197,39 @@ void SystemClock_Config(void)
 }
 
 /**
+  * @brief USART1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART1_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART1_Init 0 */
+
+  /* USER CODE END USART1_Init 0 */
+
+  /* USER CODE BEGIN USART1_Init 1 */
+
+  /* USER CODE END USART1_Init 1 */
+  huart1.Instance = USART1;
+  huart1.Init.BaudRate = 115200;
+  huart1.Init.WordLength = UART_WORDLENGTH_8B;
+  huart1.Init.StopBits = UART_STOPBITS_1;
+  huart1.Init.Parity = UART_PARITY_NONE;
+  huart1.Init.Mode = UART_MODE_TX_RX;
+  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART1_Init 2 */
+
+  /* USER CODE END USART1_Init 2 */
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -172,6 +255,16 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(LED_SYS_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : KEY2_Pin */
+  GPIO_InitStruct.Pin = KEY2_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(KEY2_GPIO_Port, &GPIO_InitStruct);
+
+  /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(EXTI0_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(EXTI0_IRQn);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 

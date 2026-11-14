@@ -44,7 +44,7 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
-    # Add user sources here
+    Core/Src/key.c
 )
 
 # Add include paths
@@ -65,4 +65,11 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
     stm32cubemx
 
     # Add user defined libraries
+)
+
+# newlib: bare-metal syscalls + float support for printf("%f")
+# 注意：-specs=nano.specs 已在 cmake/gcc-arm-none-eabi.cmake 中设置，这里不要重复
+target_link_options(${CMAKE_PROJECT_NAME} PRIVATE
+    -specs=nosys.specs
+    -Wl,-u,_printf_float
 )
