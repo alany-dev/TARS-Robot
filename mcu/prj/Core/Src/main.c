@@ -27,6 +27,8 @@
 #include "servo.h"
 #include "motor.h"
 #include "encoder.h"
+#include "speed_loop.h"
+#include "voltage.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -45,9 +47,13 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+ADC_HandleTypeDef hadc1;
+DMA_HandleTypeDef hdma_adc1;
+
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim5;
+TIM_HandleTypeDef htim7;
 TIM_HandleTypeDef htim8;
 
 UART_HandleTypeDef huart1;
@@ -59,11 +65,14 @@ UART_HandleTypeDef huart1;
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_TIM8_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_TIM5_Init(void);
+static void MX_TIM7_Init(void);
+static void MX_ADC1_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -114,16 +123,21 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_USART1_UART_Init();
   MX_TIM8_Init();
   MX_TIM1_Init();
   MX_TIM2_Init();
   MX_TIM5_Init();
+  MX_TIM7_Init();
+  MX_ADC1_Init();
   /* USER CODE BEGIN 2 */
   Key_Init();
   Servo_Init();                     /* TIM8_CH3 / PC8，上电回中位 1500 µs */
   Motor_Init();                     /* TIM1 CH1~CH4，上电确保电机停转 */
   Encoder_Init();                   /* TIM2/TIM5 编码器接口，清零计数 */
+  SpeedLoop_Init();                 /* 双轮 PID + 启动 TIM7 10 ms 中断 */
+  Voltage_Init();                   /* ADC1 三通道：PB0 / VREFINT / 温度，启动 DMA */
 
   printf("\r\n=== TARS-Robot MCU boot ===\r\n");
   printf("SYSCLK = %lu Hz\r\n", (unsigned long)SystemCoreClock);
@@ -148,73 +162,65 @@ int main(void)
     /* USER CODE BEGIN 3 */
     uint32_t now = HAL_GetTick();
 
-    /* 按键：10 ms 一次，消抖后的单击 / 长按在这里取事件 */
+    /* 按键：单击切换“停/前进”，长按急停 */
     static uint32_t t_key = 0;
+    static float    target_mps = 0.0f;
     if (now - t_key >= 10U) {
         t_key = now;
         Key_Task();
 
         switch (Key_GetEvent()) {
         case KEY_EVENT_CLICK:
-            printf("KEY2 click\r\n");
+            target_mps = (target_mps > 0.0f) ? 0.0f : 0.15f;
+            SpeedLoop_SetTargetMps(target_mps, target_mps);
+            printf("target = %.2f m/s\r\n", target_mps);
             break;
+
         case KEY_EVENT_LONG_PRESS:
-            printf("KEY2 long press\r\n");
+            target_mps = 0.0f;
+            SpeedLoop_Stop();
+            printf("EMERGENCY STOP\r\n");
             break;
+
         default:
             break;
         }
     }
 
-    // /* LED + 日志：500 ms 一次；不用 HAL_Delay 阻塞，避免拖慢按键响应 */
-    // static uint32_t t_led = 0;
-    // if (now - t_led >= 500U) {
-    //     t_led = now;
-    //     HAL_GPIO_TogglePin(LED_SYS_GPIO_Port, LED_SYS_Pin);
-    //     printf("tick=%lu, led=%d\r\n",
-    //            (unsigned long)now,
-    //            (int)HAL_GPIO_ReadPin(LED_SYS_GPIO_Port, LED_SYS_Pin));
-    // }
+    /* 电压：100 ms 采样一次；严重低压立即停车 */
+    static uint32_t t_vbat = 0;
+    if (now - t_vbat >= 100U) {
+        t_vbat = now;
+        Voltage_Task();
+        if (Voltage_IsCritical()) {
+            SpeedLoop_Stop();
+        }
+    }
 
-    // /* 舵机：1 s 一步，小幅度来回，先确认方向和中位，再逐步逼近机械限位 */
-    // static uint32_t t_servo = 0;
-    // static uint8_t  servo_step = 0;
-    // if (now - t_servo >= 1000U) {
-    //     t_servo = now;
-    //     static const uint16_t seq[4] = {1500U, 1350U, 1500U, 1650U};
-    //     Servo_SetPulseUs(seq[servo_step]);
-    //     printf("servo = %u us\r\n", Servo_GetPulseUs());
-    //     servo_step = (uint8_t)((servo_step + 1U) % 4U);
-    // }
+    /* 心跳：本地演示保活。
+     * SpeedLoop 有“300 ms 无心跳自动停车”保护，本地没有上位机，
+     * 所以这里每 100 ms 喂一次。第 9 章接协议后改由协议层喂。 */
+    static uint32_t t_hb = 0;
+    if (now - t_hb >= 100U) {
+        t_hb = now;
+        SpeedLoop_Heartbeat();
+    }
 
-    // /* 电机：1 s 一步开环测试。
-    //  * 安全：车轮必须架空，电机控制开关先关，确认方向后再落地。
-    //  * 序列 0 → 200 → 400 → 0 → -200 → -400 → 0，观察两轮转向是否一致。 */
-    // static uint32_t t_motor = 0;
-    // static uint8_t  motor_step = 0;
-    // if (now - t_motor >= 1000U) {
-    //     t_motor = now;
-    //     static const int16_t seq[7] = {0, 200, 400, 0, -200, -400, 0};
-    //     Motor_SetBoth(seq[motor_step], seq[motor_step]);
-    //     printf("motor L=%d R=%d\r\n",
-    //            Motor_GetPulse(MOTOR_LEFT), Motor_GetPulse(MOTOR_RIGHT));
-    //     motor_step = (uint8_t)((motor_step + 1U) % 7U);
-    // }
-
-    /* 编码器：200 ms 打印一次。
-     * raw   = 定时器 CNT 当前值（0~0xFFFFFFFF）
-     * tot   = 累计计数（手转一圈前后相减，就是 counts/圈）
-     * d     = 这 200 ms 的增量，静止时应该恒为 0 */
-    static uint32_t t_enc = 0;
-    if (now - t_enc >= 200U) {
-        t_enc = now;
-        int32_t dl = Encoder_ReadDelta(ENC_LEFT);
-        int32_t dr = Encoder_ReadDelta(ENC_RIGHT);
-        printf("enc L raw=%lu tot=%ld d=%ld | R raw=%lu tot=%ld d=%ld\r\n",
-               (unsigned long)Encoder_GetRaw(ENC_LEFT),
-               (long)Encoder_GetTotal(ENC_LEFT), (long)dl,
-               (unsigned long)Encoder_GetRaw(ENC_RIGHT),
-               (long)Encoder_GetTotal(ENC_RIGHT), (long)dr);
+    /* 500 ms 打印实际速度。
+     * 注意：这里绝不能调用 Encoder_ReadDelta —— 它会把 TIM7 中断里的
+     * 增量“偷走”，导致速度环反馈丢失。要用 SpeedLoop 保存好的值。 */
+    static uint32_t t_log = 0;
+    if (now - t_log >= 500U) {
+        t_log = now;
+        float vl = 0.0f, vr = 0.0f;
+        SpeedLoop_GetActualMps(&vl, &vr);
+        printf("target=%.2f | actual L=%.2f R=%.2f | out L=%.0f R=%.0f | sw=%u fault=%u\r\n",
+               target_mps, vl, vr,
+               SpeedLoop_GetOutput(ENC_LEFT), SpeedLoop_GetOutput(ENC_RIGHT),
+               Motor_IsSwitchOn(), SpeedLoop_IsFault());
+        printf("BAT %.2f V | VDDA %.2f V | TEMP %.1f C | %s\r\n",
+               Voltage_Get(), Voltage_GetVdda(), Voltage_GetTemp(),
+               Voltage_IsLow() ? "LOW" : "OK");
     }
   }
   /* USER CODE END 3 */
@@ -263,6 +269,76 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+}
+
+/**
+  * @brief ADC1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_ADC1_Init(void)
+{
+
+  /* USER CODE BEGIN ADC1_Init 0 */
+
+  /* USER CODE END ADC1_Init 0 */
+
+  ADC_ChannelConfTypeDef sConfig = {0};
+
+  /* USER CODE BEGIN ADC1_Init 1 */
+
+  /* USER CODE END ADC1_Init 1 */
+
+  /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
+  */
+  hadc1.Instance = ADC1;
+  hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
+  hadc1.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc1.Init.ScanConvMode = ENABLE;
+  hadc1.Init.ContinuousConvMode = ENABLE;
+  hadc1.Init.DiscontinuousConvMode = DISABLE;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc1.Init.NbrOfConversion = 3;
+  hadc1.Init.DMAContinuousRequests = ENABLE;
+  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  if (HAL_ADC_Init(&hadc1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_8;
+  sConfig.Rank = 1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_480CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_VREFINT;
+  sConfig.Rank = 2;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_TEMPSENSOR;
+  sConfig.Rank = 3;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN ADC1_Init 2 */
+
+  /* USER CODE END ADC1_Init 2 */
+
 }
 
 /**
@@ -451,6 +527,44 @@ static void MX_TIM5_Init(void)
 }
 
 /**
+  * @brief TIM7 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM7_Init(void)
+{
+
+  /* USER CODE BEGIN TIM7_Init 0 */
+
+  /* USER CODE END TIM7_Init 0 */
+
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM7_Init 1 */
+
+  /* USER CODE END TIM7_Init 1 */
+  htim7.Instance = TIM7;
+  htim7.Init.Prescaler = 83;
+  htim7.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim7.Init.Period = 9999;
+  htim7.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_Base_Init(&htim7) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim7, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM7_Init 2 */
+
+  /* USER CODE END TIM7_Init 2 */
+
+}
+
+/**
   * @brief TIM8 Initialization Function
   * @param None
   * @retval None
@@ -559,6 +673,22 @@ static void MX_USART1_UART_Init(void)
 }
 
 /**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA2_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA2_Stream0_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -573,10 +703,10 @@ static void MX_GPIO_Init(void)
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOH_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_GPIOE_CLK_ENABLE();
   __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
-  __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(LED_SYS_GPIO_Port, LED_SYS_Pin, GPIO_PIN_SET);

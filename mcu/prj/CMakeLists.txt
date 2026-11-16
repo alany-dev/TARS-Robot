@@ -48,6 +48,9 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/servo.c
     Core/Src/motor.c
     Core/Src/encoder.c
+    Core/Src/pid.c
+    Core/Src/speed_loop.c
+    Core/Src/voltage.c
 )
 
 # Add include paths
