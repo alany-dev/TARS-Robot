@@ -43,6 +43,8 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 )
 
 # Add sources to executable
+file(GLOB U8G2_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/Core/ThirdParty/U8g2/*.c)
+
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/key.c
     Core/Src/servo.c
@@ -51,6 +53,17 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/pid.c
     Core/Src/speed_loop.c
     Core/Src/voltage.c
+    Core/Src/imu.c
+    Core/Src/oled.c
+    ${U8G2_SOURCES}
+    Core/ThirdParty/Fusion/FusionAhrs.c
+    Core/ThirdParty/Fusion/FusionCompass.c
+    Core/ThirdParty/Fusion/FusionOffset.c
+)
+
+target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
+    Core/ThirdParty/Fusion
+    Core/ThirdParty/U8g2
 )
 
 # Add include paths

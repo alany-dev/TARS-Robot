@@ -29,6 +29,8 @@
 #include "encoder.h"
 #include "speed_loop.h"
 #include "voltage.h"
+#include "imu.h"
+#include "oled.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -49,6 +51,10 @@
 /* Private variables ---------------------------------------------------------*/
 ADC_HandleTypeDef hadc1;
 DMA_HandleTypeDef hdma_adc1;
+
+I2C_HandleTypeDef hi2c2;
+
+SPI_HandleTypeDef hspi2;
 
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
@@ -73,6 +79,8 @@ static void MX_TIM2_Init(void);
 static void MX_TIM5_Init(void);
 static void MX_TIM7_Init(void);
 static void MX_ADC1_Init(void);
+static void MX_I2C2_Init(void);
+static void MX_SPI2_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -131,6 +139,8 @@ int main(void)
   MX_TIM5_Init();
   MX_TIM7_Init();
   MX_ADC1_Init();
+  MX_I2C2_Init();
+  MX_SPI2_Init();
   /* USER CODE BEGIN 2 */
   Key_Init();
   Servo_Init();                     /* TIM8_CH3 / PC8，上电回中位 1500 µs */
@@ -138,6 +148,13 @@ int main(void)
   Encoder_Init();                   /* TIM2/TIM5 编码器接口，清零计数 */
   SpeedLoop_Init();                 /* 双轮 PID + 启动 TIM7 10 ms 中断 */
   Voltage_Init();                   /* ADC1 三通道：PB0 / VREFINT / 温度，启动 DMA */
+  OLED_Init();                      /* U8g2 / SSD1306 128x64，SPI2（8 孔 DISPLAY 座）*/
+
+  /* QMI8658：上电保持静止约 0.6 s 做陀螺零偏 */
+  uint8_t imu_ok = IMU_Init();
+  if (imu_ok == 0) {
+      IMU_CalibrateGyro(1000);      /* 约 2 s，带静止检测 */
+  }
 
   printf("\r\n=== TARS-Robot MCU boot ===\r\n");
   printf("SYSCLK = %lu Hz\r\n", (unsigned long)SystemCoreClock);
@@ -151,6 +168,11 @@ int main(void)
   printf("encoder init: L raw=%lu R raw=%lu\r\n",
          (unsigned long)Encoder_GetRaw(ENC_LEFT),
          (unsigned long)Encoder_GetRaw(ENC_RIGHT));
+  printf("IMU: %s (ID=0x%02X)\r\n",
+         (imu_ok == 0) ? "OK" :
+         (imu_ok == 1) ? "NOT FOUND" :
+         (imu_ok == 2) ? "WHO_AM_I BAD" : "CTRL WRITE FAIL",
+         IMU_GetWhoAmI());
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -187,6 +209,13 @@ int main(void)
         }
     }
 
+    /* IMU：10 ms 更新一次（Fusion AHRS，I2C2） */
+    static uint32_t t_imu = 0;
+    if (now - t_imu >= 10U) {
+        t_imu = now;
+        IMU_Update(0.01f);
+    }
+
     /* 电压：100 ms 采样一次；严重低压立即停车 */
     static uint32_t t_vbat = 0;
     if (now - t_vbat >= 100U) {
@@ -214,13 +243,19 @@ int main(void)
         t_log = now;
         float vl = 0.0f, vr = 0.0f;
         SpeedLoop_GetActualMps(&vl, &vr);
-        printf("target=%.2f | actual L=%.2f R=%.2f | out L=%.0f R=%.0f | sw=%u fault=%u\r\n",
-               target_mps, vl, vr,
-               SpeedLoop_GetOutput(ENC_LEFT), SpeedLoop_GetOutput(ENC_RIGHT),
-               Motor_IsSwitchOn(), SpeedLoop_IsFault());
-        printf("BAT %.2f V | VDDA %.2f V | TEMP %.1f C | %s\r\n",
-               Voltage_Get(), Voltage_GetVdda(), Voltage_GetTemp(),
-               Voltage_IsLow() ? "LOW" : "OK");
+        float ax, ay, az;
+        IMU_GetAcc(&ax, &ay, &az);
+        printf("IMU a=%.2f/%.2f/%.2f r=%6.1f p=%6.1f y=%6.1f | BAT %.2fV err=%lu\r\n",
+               ax, ay, az,
+               IMU_GetRoll(), IMU_GetPitch(), IMU_GetYaw(),
+               Voltage_Get(), (unsigned long)IMU_GetErrorCount());
+    }
+
+    /* OLED 仪表盘：200 ms 刷新，不进 10 ms 控制环 */
+    static uint32_t t_oled = 0;
+    if (now - t_oled >= 200U) {
+        t_oled = now;
+        OLED_Dashboard();
     }
   }
   /* USER CODE END 3 */
@@ -338,6 +373,78 @@ static void MX_ADC1_Init(void)
   /* USER CODE BEGIN ADC1_Init 2 */
 
   /* USER CODE END ADC1_Init 2 */
+
+}
+
+/**
+  * @brief I2C2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2C2_Init(void)
+{
+
+  /* USER CODE BEGIN I2C2_Init 0 */
+
+  /* USER CODE END I2C2_Init 0 */
+
+  /* USER CODE BEGIN I2C2_Init 1 */
+
+  /* USER CODE END I2C2_Init 1 */
+  hi2c2.Instance = I2C2;
+  hi2c2.Init.ClockSpeed = 400000;
+  hi2c2.Init.DutyCycle = I2C_DUTYCYCLE_2;
+  hi2c2.Init.OwnAddress1 = 0;
+  hi2c2.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c2.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c2.Init.OwnAddress2 = 0;
+  hi2c2.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c2.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C2_Init 2 */
+
+  /* USER CODE END I2C2_Init 2 */
+
+}
+
+/**
+  * @brief SPI2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_SPI2_Init(void)
+{
+
+  /* USER CODE BEGIN SPI2_Init 0 */
+
+  /* USER CODE END SPI2_Init 0 */
+
+  /* USER CODE BEGIN SPI2_Init 1 */
+
+  /* USER CODE END SPI2_Init 1 */
+  /* SPI2 parameter configuration*/
+  hspi2.Instance = SPI2;
+  hspi2.Init.Mode = SPI_MODE_MASTER;
+  hspi2.Init.Direction = SPI_DIRECTION_2LINES;
+  hspi2.Init.DataSize = SPI_DATASIZE_8BIT;
+  hspi2.Init.CLKPolarity = SPI_POLARITY_LOW;
+  hspi2.Init.CLKPhase = SPI_PHASE_1EDGE;
+  hspi2.Init.NSS = SPI_NSS_SOFT;
+  hspi2.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
+  hspi2.Init.FirstBit = SPI_FIRSTBIT_MSB;
+  hspi2.Init.TIMode = SPI_TIMODE_DISABLE;
+  hspi2.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
+  hspi2.Init.CRCPolynomial = 10;
+  if (HAL_SPI_Init(&hspi2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN SPI2_Init 2 */
+
+  /* USER CODE END SPI2_Init 2 */
 
 }
 
@@ -702,14 +809,17 @@ static void MX_GPIO_Init(void)
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOH_CLK_ENABLE();
+  __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_GPIOE_CLK_ENABLE();
-  __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(LED_SYS_GPIO_Port, LED_SYS_Pin, GPIO_PIN_SET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOD, LCD_DC_Pin|LCD_RES_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : LED_SYS_Pin */
   GPIO_InitStruct.Pin = LED_SYS_Pin;
@@ -717,6 +827,13 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(LED_SYS_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : LCD_DC_Pin LCD_RES_Pin */
+  GPIO_InitStruct.Pin = LCD_DC_Pin|LCD_RES_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
 
   /*Configure GPIO pin : MOTOR_SW_Pin */
   GPIO_InitStruct.Pin = MOTOR_SW_Pin;
@@ -735,6 +852,14 @@ static void MX_GPIO_Init(void)
   HAL_NVIC_EnableIRQ(EXTI0_IRQn);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
+
+  /* OLED 控制脚：PD13=DC / PD14=RES（6 针屏无 CS，不用 PD12） */
+  HAL_GPIO_WritePin(GPIOD, GPIO_PIN_13|GPIO_PIN_14, GPIO_PIN_SET);
+  GPIO_InitStruct.Pin = GPIO_PIN_13|GPIO_PIN_14;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
 
   /* USER CODE END MX_GPIO_Init_2 */
 }
